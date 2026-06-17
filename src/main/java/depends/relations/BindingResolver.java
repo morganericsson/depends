@@ -34,7 +34,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.lang.management.ManagementFactory;
+import java.util.stream.StreamSupport;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class BindingResolver implements IBindingResolver{
 
@@ -46,6 +48,14 @@ public class BindingResolver implements IBindingResolver{
 	private boolean eagerExpressionResolve = false;
 	private boolean isCollectUnsolvedBindings = false;
 	private boolean isDuckTypingDeduce = true;
+	private final boolean parallelAnalysis;
+	private final boolean cacheEnabled;
+	private boolean analysisStarted = false;
+	private final Map<ResolveNameKey, Entity> resolveNameCache = new ConcurrentHashMap<>();
+	private final Set<ResolveNameKey> resolveNameMissCache = ConcurrentHashMap.newKeySet();
+	private final Map<String, Collection<Entity>> importedRelationCache = new ConcurrentHashMap<>();
+	private final Map<String, ImportedTypesResult> importedTypesCache = new ConcurrentHashMap<>();
+	private final Map<String, Collection<Entity>> importedFilesCache = new ConcurrentHashMap<>();
 	private static Logger logger = LoggerFactory.getLogger(IBindingResolver.class);
 
 	public BindingResolver(AbstractLangProcessor langProcessor,
@@ -54,14 +64,17 @@ public class BindingResolver implements IBindingResolver{
 		this.importLookupStrategy = langProcessor.getImportLookupStrategy();
 		this.buildInTypeManager = langProcessor.getBuiltInType();
 		this.isCollectUnsolvedBindings = isCollectUnsolvedBindings;
-		this.isDuckTypingDeduce = isDuckTypingDeduce;
-		unsolvedSymbols= new HashSet<>();
+		this.isDuckTypingDeduce = isDuckTypingDeduce && !langProcessor.supportedLanguage().startsWith("java");
+		this.parallelAnalysis = langProcessor.supportParallelAnalysis();
+		this.cacheEnabled = langProcessor.supportedLanguage().startsWith("java");
+		unsolvedSymbols= ConcurrentHashMap.newKeySet();
 		importLookupStrategy.setBindingResolver(this);
 	}
 
 
 	@Override
 	public  Set<UnsolvedBindings> resolveAllBindings(boolean isEagerExpressionResolve) {
+		analysisStarted = true;
 		System.out.println("Resolve type bindings....");
 		if (logger.isInfoEnabled()) {
 			logger.info("Resolve type bindings...");
@@ -79,6 +92,14 @@ public class BindingResolver implements IBindingResolver{
 	private void resolveTypes(boolean eagerExpressionResolve) {
 		this.eagerExpressionResolve = eagerExpressionResolve;
 		Iterator<Entity> iterator = repo.sortedFileIterator();
+		if (parallelAnalysis) {
+			Iterable<Entity> iterable = () -> iterator;
+			StreamSupport.stream(iterable.spliterator(), false)
+					.collect(java.util.stream.Collectors.toList())
+					.parallelStream()
+					.forEach(entity -> entity.inferEntities(this));
+			return;
+		}
 		while(iterator.hasNext()) {
 			Entity entity= iterator.next();
 			entity.inferEntities(this);
@@ -88,18 +109,39 @@ public class BindingResolver implements IBindingResolver{
 
 	@Override
 	public Collection<Entity> getImportedRelationEntities(List<Import> importedNames) {
-		return importLookupStrategy.getImportedRelationEntities(importedNames);
+		if (!useCache()) return importLookupStrategy.getImportedRelationEntities(importedNames);
+		String key = importKey(importedNames);
+		Collection<Entity> cached = importedRelationCache.get(key);
+		if (cached != null) return cached;
+		Collection<Entity> result = importLookupStrategy.getImportedRelationEntities(importedNames);
+		importedRelationCache.put(key, result);
+		return result;
 	}
 
 	@Override
 	public Collection<Entity> getImportedTypes(List<Import> importedNames, FileEntity fileEntity) {
-		HashSet<UnsolvedBindings> unsolved = new HashSet<UnsolvedBindings>();
-		Collection<Entity> result = importLookupStrategy.getImportedTypes(importedNames,unsolved);
-		for (UnsolvedBindings item:unsolved) {
+		if (!useCache()) {
+			HashSet<UnsolvedBindings> unsolved = new HashSet<UnsolvedBindings>();
+			Collection<Entity> result = importLookupStrategy.getImportedTypes(importedNames,unsolved);
+			for (UnsolvedBindings item:unsolved) {
+				item.setFromEntity(fileEntity);
+				addUnsolvedBinding(item);
+			}
+			return result;
+		}
+		String key = fileEntity.getId() + ":" + importKey(importedNames);
+		ImportedTypesResult cached = importedTypesCache.get(key);
+		if (cached == null) {
+			HashSet<UnsolvedBindings> unsolved = new HashSet<UnsolvedBindings>();
+			Collection<Entity> result = importLookupStrategy.getImportedTypes(importedNames,unsolved);
+			cached = new ImportedTypesResult(result, unsolved);
+			importedTypesCache.put(key, cached);
+		}
+		for (UnsolvedBindings item:cached.unsolved) {
 			item.setFromEntity(fileEntity);
 			addUnsolvedBinding(item);
 		}
-		return result;
+		return cached.result;
 	}
 
 	private void addUnsolvedBinding(UnsolvedBindings item) {
@@ -108,7 +150,13 @@ public class BindingResolver implements IBindingResolver{
 	}
 	@Override
 	public Collection<Entity> getImportedFiles(List<Import> importedNames) {
-		return importLookupStrategy.getImportedFiles(importedNames);
+		if (!useCache()) return importLookupStrategy.getImportedFiles(importedNames);
+		String key = importKey(importedNames);
+		Collection<Entity> cached = importedFilesCache.get(key);
+		if (cached != null) return cached;
+		Collection<Entity> result = importLookupStrategy.getImportedFiles(importedNames);
+		importedFilesCache.put(key, result);
+		return result;
 	}
 
 
@@ -124,11 +172,30 @@ public class BindingResolver implements IBindingResolver{
 	@Override
 	public Entity resolveName(Entity fromEntity, GenericName rawName, boolean searchImport) {
 		if (rawName==null) return null;
+		if (!useCache()) {
+			Entity entity = resolveNameInternal(fromEntity,rawName,searchImport);
+			if (entity==null ) {
+				if (!this.buildInTypeManager.isBuiltInType(rawName.getName())) {
+					addUnsolvedBinding(new UnsolvedBindings(rawName.getName(), fromEntity));
+				}
+			}
+			return entity;
+		}
+		ResolveNameKey key = ResolveNameKey.build(fromEntity, rawName, searchImport);
+		if (resolveNameCache.containsKey(key)) {
+			return resolveNameCache.get(key);
+		}
+		if (resolveNameMissCache.contains(key)) {
+			return null;
+		}
 		Entity entity = resolveNameInternal(fromEntity,rawName,searchImport);
 		if (entity==null ) {
+			resolveNameMissCache.add(key);
 			if (!this.buildInTypeManager.isBuiltInType(rawName.getName())) {
 				addUnsolvedBinding(new UnsolvedBindings(rawName.getName(), fromEntity));
 			}
+		}else {
+			resolveNameCache.put(key, entity);
 		}
 		return entity;
 	}
@@ -292,6 +359,64 @@ public class BindingResolver implements IBindingResolver{
 	@Override
 	public EntityRepo getRepo() {
 		return repo;
+	}
+
+	private String importKey(List<Import> importedNames) {
+		StringBuilder builder = new StringBuilder();
+		for (Import importedName : importedNames) {
+			builder.append(importedName.getClass().getName())
+					.append(':')
+					.append(importedName.getContent())
+					.append(';');
+		}
+		return builder.toString();
+	}
+
+	private boolean useCache() {
+		return cacheEnabled && analysisStarted;
+	}
+
+	private static final class ImportedTypesResult {
+		private final Collection<Entity> result;
+		private final Set<UnsolvedBindings> unsolved;
+
+		private ImportedTypesResult(Collection<Entity> result, Set<UnsolvedBindings> unsolved) {
+			this.result = result;
+			this.unsolved = unsolved;
+		}
+	}
+
+	private static final class ResolveNameKey {
+		private final Integer fromEntityId;
+		private final String rawName;
+		private final boolean searchImport;
+
+		private ResolveNameKey(Integer fromEntityId, String rawName, boolean searchImport) {
+			this.fromEntityId = fromEntityId;
+			this.rawName = rawName;
+			this.searchImport = searchImport;
+		}
+
+		private static ResolveNameKey build(Entity fromEntity, GenericName rawName, boolean searchImport) {
+			Integer fromEntityId = fromEntity == null ? null : fromEntity.getId();
+			String name = rawName == null ? null : rawName.uniqName();
+			return new ResolveNameKey(fromEntityId, name, searchImport);
+		}
+
+		@Override
+		public boolean equals(Object o) {
+			if (this == o) return true;
+			if (o == null || getClass() != o.getClass()) return false;
+			ResolveNameKey that = (ResolveNameKey) o;
+			return searchImport == that.searchImport &&
+					Objects.equals(fromEntityId, that.fromEntityId) &&
+					Objects.equals(rawName, that.rawName);
+		}
+
+		@Override
+		public int hashCode() {
+			return Objects.hash(fromEntityId, rawName, searchImport);
+		}
 	}
 
 }

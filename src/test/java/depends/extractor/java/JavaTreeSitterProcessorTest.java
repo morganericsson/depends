@@ -28,4 +28,20 @@ public class JavaTreeSitterProcessorTest {
         FileParser parser = processor.createFileParser();
         assertTrue(parser instanceof JavaTreeSitterFileParser);
     }
+
+    @Test
+    public void should_use_tree_sitter_for_java_language() {
+        JavaProcessor processor = new JavaProcessor();
+        assertEquals("java", processor.supportedLanguage());
+        assertTrue(processor.createFileParser() instanceof JavaTreeSitterFileParser);
+    }
+
+    @Test
+    public void should_keep_antlr_java_parser_available() {
+        new LangRegister();
+        assertNotNull(LangProcessorRegistration.getRegistry().getProcessorOf("java-antlr"));
+        JavaAntlrProcessor processor = new JavaAntlrProcessor();
+        assertEquals("java-antlr", processor.supportedLanguage());
+        assertTrue(processor.createFileParser() instanceof JavaFileParser);
+    }
 }

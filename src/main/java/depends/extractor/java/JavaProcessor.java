@@ -52,7 +52,7 @@ public class JavaProcessor extends AbstractLangProcessor {
 	
 	@Override
 	public FileParser createFileParser() {
-		return new JavaFileParser(entityRepo, bindingResolver);
+		return new JavaTreeSitterFileParser(entityRepo, bindingResolver);
 	}
 	
 	@Override
@@ -82,6 +82,11 @@ public class JavaProcessor extends AbstractLangProcessor {
 		depedencyTypes.add(THROW);
 		depedencyTypes.add(ANNOTATION);
 		return depedencyTypes;
+	}
+
+	@Override
+	public boolean supportParallelAnalysis() {
+		return true;
 	}
 	
 

@@ -71,8 +71,8 @@ The CLI tool usage could be listed by ```depends --help```, like following:
     Usage: depends [-hms] [--auto-include] [-d=<dir>] [-g=<granularity>]
                    [-p=<namePathPattern>] [-f=<format>[,<format>...]]...
                    [-i=<includes>[,<includes>...]]... <lang> <src> <output>
-          <lang>                 The language of project files: [cpp, java, ruby, python,
-                                   pom]
+          <lang>                 The language of project files: [cpp, java, java-ts,
+                                   java-antlr, ruby, python, pom]
           <src>                  The directory to be analyzed
           <output>               The output file name
           --auto-include         auto include all paths under the source path (please
@@ -103,7 +103,14 @@ Do not specify include paths outside of src directory (e.g. system level include
 
 ```--auto-include``` is a useful parameter to simplify the input of include dirs: with this parameter, *Depends* will include all sub-directories of ```src```.
 
-For ```Java``` programs, you are not required to specify include paths, because the mapping between java file paths are explicitly stated in the import statements.
+For ```Java``` programs, you are not required to specify include paths, because the mapping between java file paths are explicitly stated in the import statements. The default ```java``` frontend uses Tree-sitter. The legacy ANTLR frontend remains available as ```java-antlr```, and ```java-ts``` is kept as a Tree-sitter compatibility alias.
+
+During the Java frontend migration, compare Tree-sitter output against the legacy ANTLR frontend with:
+
+    python3 batch/java_frontend_parity.py ../datasets/commons-imaging-1.0-alpha2-src /tmp/depends-java-parity \
+      --jar target/depends-0.9.8-jar-with-dependencies.jar
+
+If ```java``` is not on the shell path, pass the runtime explicitly with ```--java /path/to/java```.
 
 ### Output
 
@@ -175,4 +182,3 @@ The language specific front-end of *Depends* is built upon several excellent ope
 # Sponsors
  - ArchDia LLC. (www.archdia.com)
  - Emergent Design Inc.(www.emergentdesign.cn)
-

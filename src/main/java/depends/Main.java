@@ -62,15 +62,7 @@ public class Main {
 
 	public static void main(String[] args) {
 		try {
-			LangRegister langRegister = new LangRegister();
-			langRegister.register();
-			DependsCommand appArgs = CommandLine.populateCommand(new DependsCommand(), args);
-			if (appArgs.help) {
-				CommandLine.usage(new DependsCommand(), System.out);
-				System.exit(0);
-			}
-			verifyParameters(appArgs);
-			executeCommand(appArgs);
+			run(args);
 		} catch (Exception e) {
 			if (e instanceof PicocliException) {
 				CommandLine.usage(new DependsCommand(), System.out);
@@ -82,6 +74,19 @@ public class Main {
 			}
 			System.exit(0);
 		}
+	}
+
+	public static void run(String[] args) throws ParameterException {
+		TemporaryFile.reset();
+		LangRegister langRegister = new LangRegister();
+		langRegister.register();
+		DependsCommand appArgs = CommandLine.populateCommand(new DependsCommand(), args);
+		if (appArgs.help) {
+			CommandLine.usage(new DependsCommand(), System.out);
+			return;
+		}
+		verifyParameters(appArgs);
+		executeCommand(appArgs);
 	}
 
 	private static void verifyParameters(DependsCommand args) throws ParameterException {
@@ -141,6 +146,7 @@ public class Main {
 		}
 		long endTime = System.currentTimeMillis();
 		TemporaryFile.getInstance().delete();
+		TemporaryFile.reset();
 		CacheManager.create().shutdown();
 		System.out.println("Consumed time: " + (float) ((endTime - startTime) / 1000.00) + " s,  or "
 				+ (float) ((endTime - startTime) / 60000.00) + " min.");
@@ -197,6 +203,7 @@ public class Main {
 			}
 			dependencyGenerator.setOutputSelfDependencies(app.isOutputSelfDependencies());
 			dependencyGenerator.setFilenameRewritter(filenameWritter);
+			dependencyGenerator.setParallelAnalysis(app.getLang().startsWith("java"));
 		}
 		return dependencyGenerators;
 	}

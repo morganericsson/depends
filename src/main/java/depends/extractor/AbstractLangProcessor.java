@@ -254,4 +254,11 @@ abstract public class AbstractLangProcessor {
 	 * @return
 	 */
 	public boolean supportCallAsImpl(){return false;};
+
+	/**
+	 * Whether this language processor can run read-mostly analysis phases in parallel.
+	 * Processors should only enable this when parser output is complete before binding
+	 * and per-file/entity writes do not depend on traversal order.
+	 */
+	public boolean supportParallelAnalysis(){return false;};
 }

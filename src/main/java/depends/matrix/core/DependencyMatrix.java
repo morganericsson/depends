@@ -50,12 +50,12 @@ public class DependencyMatrix {
         return dependencyPairs.values();
     }
 
-	public void addNode(String name, int id) {
+	public synchronized void addNode(String name, int id) {
 		this.nodes.add(name);
 		this.nodeIdToName.put(id, name);
 	}
 	
-	public void addDependency(String depType, Integer from, Integer to,  int weight,List<DependencyDetail> details) {
+	public synchronized void addDependency(String depType, Integer from, Integer to,  int weight,List<DependencyDetail> details) {
 		if (typeFilter!=null && (!typeFilter.contains(depType)))
 			return;
 		if (!outputSelfDependencies && from.equals(to) ){
@@ -71,7 +71,7 @@ public class DependencyMatrix {
 		dependencyPair.addDependency(depType,weight,details);
 	}
 	
-	public void addDependency(String depType, Integer from, Integer to,  int weight,DependencyDetail detail) {
+	public synchronized void addDependency(String depType, Integer from, Integer to,  int weight,DependencyDetail detail) {
 		if (typeFilter!=null && (!typeFilter.contains(depType.replace(POSSIBLE_DEP,""))))
 			return;
 		if (!outputSelfDependencies && from.equals(to) ){

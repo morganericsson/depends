@@ -44,6 +44,8 @@ public abstract class ContainerEntity extends DecoratedEntity {
 
 	private ArrayList<VarEntity> vars;
 	private ArrayList<FunctionEntity> functions;
+	private HashMap<String, VarEntity> varsByName;
+	private HashMap<String, FunctionEntity> functionsByName;
 	WeakReference<HashMap<Object, Expression>> expressionWeakReference;
 	private ArrayList<Expression> expressionList;
 	private int expressionCount = 0;
@@ -67,6 +69,18 @@ public abstract class ContainerEntity extends DecoratedEntity {
 			functions = new ArrayList<>();
 		return this.functions;
 	}
+
+	private HashMap<String, VarEntity> varsByName() {
+		if (varsByName==null)
+			varsByName = new HashMap<>();
+		return varsByName;
+	}
+
+	private HashMap<String, FunctionEntity> functionsByName() {
+		if (functionsByName==null)
+			functionsByName = new HashMap<>();
+		return functionsByName;
+	}
 	
 	public ContainerEntity() {
 	}
@@ -80,6 +94,7 @@ public abstract class ContainerEntity extends DecoratedEntity {
 			logger.debug("var found: " + var.getRawName() + ":" + var.getRawType());
 		}
 		this.vars().add(var);
+		this.varsByName().putIfAbsent(var.getRawName().uniqName(), var);
 	}
 
 	public ArrayList<VarEntity> getVars() {
@@ -90,6 +105,7 @@ public abstract class ContainerEntity extends DecoratedEntity {
 
 	public void addFunction(FunctionEntity functionEntity) {
 		this.functions().add(functionEntity);
+		this.functionsByName().putIfAbsent(functionEntity.getRawName().uniqName(), functionEntity);
 	}
 
 	public ArrayList<FunctionEntity> getFunctions() {
@@ -353,7 +369,7 @@ public abstract class ContainerEntity extends DecoratedEntity {
 						return child;
 				}
 			}
-			fromEntity = (ContainerEntity) this.getAncestorOfType(ContainerEntity.class);
+			fromEntity = fromEntity.getParent();
 		}
 		return null;
 	}
@@ -366,11 +382,7 @@ public abstract class ContainerEntity extends DecoratedEntity {
 	 * @return
 	 */
 	public FunctionEntity lookupFunctionLocally(GenericName functionName) {
-		for (FunctionEntity func : getFunctions()) {
-			if (func.getRawName().equals(functionName))
-				return func;
-		}
-		return null;
+		return functionsByName().get(functionName.uniqName());
 	}
 
 	/**
@@ -394,7 +406,7 @@ public abstract class ContainerEntity extends DecoratedEntity {
 	 * @param varName
 	 * @return
 	 */
-	private Entity lookupVarBottomUpTillTopContainer(GenericName varName, ContainerEntity fromEntity) {
+	private Entity lookupVarBottomUpTillTopContainer(GenericName varName, Entity fromEntity) {
 		while (fromEntity != null) {
 			if (fromEntity instanceof ContainerEntity) {
 				VarEntity var = ((ContainerEntity) fromEntity).lookupVarLocally(varName);
@@ -407,17 +419,13 @@ public abstract class ContainerEntity extends DecoratedEntity {
 						return child;
 				}
 			}
-			fromEntity = (ContainerEntity) this.getAncestorOfType(ContainerEntity.class);
+			fromEntity = fromEntity.getParent();
 		}
 		return null;
 	}
 
 	public VarEntity lookupVarLocally(GenericName varName) {
-		for (VarEntity var : getVars()) {
-			if (var.getRawName().equals(varName))
-				return var;
-		}
-		return null;
+		return varsByName().get(varName.uniqName());
 	}
 	
 	public VarEntity lookupVarLocally(String varName) {

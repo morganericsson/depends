@@ -40,6 +40,7 @@ public class RelationCounter {
 	private EntityRepo repo;
 	private boolean callAsImpl;
 	private AbstractLangProcessor langProcessor;
+	private boolean parallelAnalysis;
 
 	public RelationCounter(EntityRepo repo, AbstractLangProcessor langProcessor, IBindingResolver bindingResolver) {
 		this.entities = repo.getFileEntities();
@@ -47,11 +48,15 @@ public class RelationCounter {
 		this.repo = repo;
 		this.callAsImpl = langProcessor.supportCallAsImpl();
 		this.langProcessor = langProcessor;
+		this.parallelAnalysis = langProcessor.supportParallelAnalysis();
 	}
 	
 	public void computeRelations() {
-		entities.forEach(entity->
-		computeRelationOf(entity));
+		if (parallelAnalysis) {
+			entities.parallelStream().forEach(entity -> computeRelationOf(entity));
+		}else {
+			entities.forEach(entity -> computeRelationOf(entity));
+		}
 	}
 
 	private void computeRelationOf(Entity entity) {

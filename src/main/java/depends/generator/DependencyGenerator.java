@@ -52,6 +52,7 @@ public abstract class DependencyGenerator {
 
 	private static Logger logger = LoggerFactory.getLogger(DependencyGenerator.class);
 	private boolean outputSelfDependencies;
+	private boolean parallelAnalysis = false;
 
 	public abstract String getType();
 	public DependencyMatrix identifyDependencies(EntityRepo entityRepo, List<String> typeFilter) {
@@ -73,14 +74,28 @@ public abstract class DependencyGenerator {
 		DependencyMatrix dependencyMatrix = new DependencyMatrix(0, typeFilter,outputSelfDependencies);
 		Iterator<Entity> iterator = entityRepo.entityIterator();
 		System.out.println("Start create dependencies matrix....");
-		while(iterator.hasNext()) {
-			Entity entity = iterator.next();
-			if (!entity.inScope()) continue;
+		if (parallelAnalysis) {
+			List<Entity> entities = new ArrayList<>();
+			while(iterator.hasNext()) {
+				entities.add(iterator.next());
+			}
+			entities.parallelStream().forEach(entity -> addEntityDependencies(entityRepo, dependencyMatrix, entity));
+		}else {
+			while(iterator.hasNext()) {
+				addEntityDependencies(entityRepo, dependencyMatrix, iterator.next());
+			}
+		}
+		System.out.println("Finish create dependencies matrix....");
+		return dependencyMatrix;
+	}
+
+	private void addEntityDependencies(EntityRepo entityRepo, DependencyMatrix dependencyMatrix, Entity entity) {
+			if (!entity.inScope()) return;
 			if (outputLevelMatch(entity)){
 				dependencyMatrix.addNode(nameOf(entity),entity.getId());
 			}
 			int entityFrom = upToOutputLevelEntityId(entityRepo, entity);
-			if (entityFrom==-1) continue;
+			if (entityFrom==-1) return;
 			for (Relation relation:entity.getRelations()) {
 				Entity relatedEntity = relation.getEntity();
 				if (relatedEntity==null) continue;
@@ -97,9 +112,6 @@ public abstract class DependencyGenerator {
 					}
 				});
 			}
-		}
-		System.out.println("Finish create dependencies matrix....");
-		return dependencyMatrix;
 	}
 
 	private List<Entity> expandEntity(Entity relatedEntity) {
@@ -171,5 +183,9 @@ public abstract class DependencyGenerator {
 
 	public void setOutputSelfDependencies(boolean outputSelfDependencies) {
 		this.outputSelfDependencies = outputSelfDependencies;
+	}
+
+	public void setParallelAnalysis(boolean parallelAnalysis) {
+		this.parallelAnalysis = parallelAnalysis;
 	}
 }

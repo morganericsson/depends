@@ -40,7 +40,6 @@ public class LangProcessorRegistration {
 		return langProcessors.get(lang);
 	}
 	public void register(AbstractLangProcessor processor) {
-		if (getProcessorOf(processor.supportedLanguage())!=null) return;
 		langProcessors.put(processor.supportedLanguage(), processor);
 	}
 	public Collection<String> getLangs() {
