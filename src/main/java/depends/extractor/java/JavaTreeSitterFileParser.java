@@ -19,7 +19,9 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Paths;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
 import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -34,6 +36,7 @@ public class JavaTreeSitterFileParser extends depends.extractor.FileParser {
     private static final Pattern TYPE_NAME_PATTERN = Pattern.compile("[A-Za-z_][A-Za-z0-9_$.]*");
 
     private final IBindingResolver bindingResolver;
+    private final Deque<String> superTypeStack = new ArrayDeque<>();
     private byte[] sourceBytes;
 
     public JavaTreeSitterFileParser(EntityRepo entityRepo, IBindingResolver bindingResolver) {
@@ -116,6 +119,16 @@ public class JavaTreeSitterFileParser extends depends.extractor.FileParser {
             processObjectCreation(node, source, context);
             return;
         }
+        if ("array_creation_expression".equals(nodeType)) {
+            processArrayCreation(node, source, context);
+            return;
+        }
+        if ("explicit_constructor_invocation".equals(nodeType)
+                || "super_constructor_invocation".equals(nodeType)
+                || "this_constructor_invocation".equals(nodeType)) {
+            processExplicitConstructorInvocation(node, source, context);
+            return;
+        }
         if ("cast_expression".equals(nodeType)) {
             processCast(node, source, context);
             return;
@@ -192,10 +205,12 @@ public class JavaTreeSitterFileParser extends depends.extractor.FileParser {
         processTypeParameters(typeParametersNode, source, context, true);
 
         TSNode superClassNode = node.getChildByFieldName("superclass");
+        String superTypeName = "";
         if (superClassNode != null && !superClassNode.isNull()) {
             List<String> superTypes = extractTypeNames(sourceSlice(superClassNode, source));
             if (!superTypes.isEmpty()) {
-                context.foundExtends(GenericName.build(superTypes.get(0)));
+                superTypeName = superTypes.get(0);
+                context.foundExtends(GenericName.build(superTypeName));
             }
         }
 
@@ -221,7 +236,9 @@ public class JavaTreeSitterFileParser extends depends.extractor.FileParser {
             }
         }
 
+        superTypeStack.push(superTypeName);
         walkChildren(node, source, context);
+        superTypeStack.pop();
         context.exitLastedEntity();
     }
 
@@ -409,6 +426,40 @@ public class JavaTreeSitterFileParser extends depends.extractor.FileParser {
         expression.setRawType(typeName);
         expression.disableDriveTypeFromChild();
         walkChildren(node, source, context);
+    }
+
+    private void processArrayCreation(TSNode node, String source, JavaHandlerContext context) {
+        TSNode typeNode = node.getChildByFieldName("type");
+        if (typeNode == null || typeNode.isNull()) {
+            typeNode = findFirstDescendantByType(node, "type_identifier");
+        }
+        String typeName = parseJavaTypeName(typeNode == null ? "" : sourceSlice(typeNode, source).trim()).baseName;
+        if (typeName.isEmpty()) {
+            walkChildren(node, source, context);
+            return;
+        }
+        Expression expression = addExpression(context, node, null, null,
+                true, false, true, false, false, false);
+        expression.setRawType(typeName);
+        expression.disableDriveTypeFromChild();
+        walkChildren(node, source, context);
+    }
+
+    private void processExplicitConstructorInvocation(TSNode node, String source, JavaHandlerContext context) {
+        String raw = sourceSlice(node, source).trim();
+        String typeName = "";
+        if (raw.startsWith("super")) {
+            typeName = superTypeStack.isEmpty() ? "" : superTypeStack.peek();
+        } else if (raw.startsWith("this") && context.currentType() != null) {
+            typeName = context.currentType().getRawName().uniqName();
+        }
+        if (!typeName.isEmpty()) {
+            Expression expression = addExpression(context, node, null, null,
+                    true, false, false, false, false, false);
+            expression.setRawType(typeName);
+            expression.disableDriveTypeFromChild();
+        }
+        processInvocationArguments(node, source, context);
     }
 
     private void processCast(TSNode node, String source, JavaHandlerContext context) {

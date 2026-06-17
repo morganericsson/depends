@@ -162,10 +162,43 @@ public class BindingResolver implements IBindingResolver{
 
 	@Override
 	public TypeEntity inferTypeFromName(Entity fromEntity, GenericName rawName) {
+		TypeEntity typeEntity = resolveTypeEntity(fromEntity, rawName);
+		if (typeEntity != null) {
+			return typeEntity;
+		}
 		Entity data = resolveName(fromEntity, rawName, true);
 		if (data == null)
 			return null;
 		return data.getType();
+	}
+
+	private TypeEntity resolveTypeEntity(Entity fromEntity, GenericName rawName) {
+		if (rawName == null || rawName.getName() == null) {
+			return null;
+		}
+		if (buildInTypeManager.isBuiltInType(rawName.getName())) {
+			return TypeEntity.buildInType;
+		}
+		String name = rawName.getName();
+		if (rawName.startsWith(".")) {
+			Entity entity = repo.getEntity(rawName.substring(1));
+			return entity instanceof TypeEntity ? (TypeEntity) entity : null;
+		}
+		TypeEntity sameScopeType = findTypeUnderSamePackage(fromEntity, name);
+		if (sameScopeType != null) {
+			return sameScopeType;
+		}
+		if (importLookupStrategy.supportGlobalNameLookup()) {
+			Entity entity = repo.getEntity(name);
+			if (entity instanceof TypeEntity) {
+				return (TypeEntity) entity;
+			}
+		}
+		if (fromEntity == null) {
+			return null;
+		}
+		Entity importedType = lookupTypeInImported((FileEntity)(fromEntity.getAncestorOfType(FileEntity.class)), name);
+		return importedType instanceof TypeEntity ? (TypeEntity) importedType : null;
 	}
 
 
@@ -319,6 +352,35 @@ public class BindingResolver implements IBindingResolver{
 			fromEntity = fromEntity.getParent();
 			if (fromEntity == null)
 				break;
+		}
+		return null;
+	}
+
+	private TypeEntity findTypeUnderSamePackage(Entity fromEntity, String name) {
+		while (fromEntity != null) {
+			TypeEntity type = findTypeInEntity(fromEntity, name, new HashSet<>());
+			if (type != null) {
+				return type;
+			}
+			fromEntity = fromEntity.getParent();
+		}
+		return null;
+	}
+
+	private TypeEntity findTypeInEntity(Entity entity, String name, HashSet<Entity> searched) {
+		if (entity == null || searched.contains(entity)) {
+			return null;
+		}
+		searched.add(entity);
+		if (entity instanceof TypeEntity
+				&& (entity.getRawName().getName().equals(name) || entity.getQualifiedName().equals(name))) {
+			return (TypeEntity) entity;
+		}
+		for (Entity child : entity.getChildren()) {
+			TypeEntity type = findTypeInEntity(child, name, searched);
+			if (type != null) {
+				return type;
+			}
 		}
 		return null;
 	}

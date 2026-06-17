@@ -26,5 +26,9 @@ public class JavaTreeSitterExpressionTest extends JavaTreeSitterParserTest {
         assertContainsRelation(method, DependencyType.CREATE, "ts.TSExprA");
         assertContainsRelation(method, DependencyType.CALL, "ts.TSExprA.foo");
         assertContainsRelation(method, DependencyType.CAST, "ts.TSExprA");
+
+        Entity constructor = entityRepo.getEntity("ts.TSExprChild.TSExprChild");
+        assertNotNull(constructor);
+        assertContainsRelation(constructor, DependencyType.CALL, "ts.TSExprBase");
     }
 }
