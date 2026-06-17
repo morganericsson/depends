@@ -57,6 +57,15 @@ class DependencyGraphSnapshot {
         return false;
     }
 
+    boolean containsEdgeContaining(String sourcePart, String targetPart, String type) {
+        for (TypedEdge edge : typedEdges()) {
+            if (edge.source.contains(sourcePart) && edge.target.contains(targetPart) && edge.type.equals(type)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     Set<TypedEdge> missingFrom(DependencyGraphSnapshot baseline) {
         Set<TypedEdge> missing = baseline.typedEdges();
         missing.removeAll(typedEdges());

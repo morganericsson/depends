@@ -424,8 +424,7 @@ public class JavaTreeSitterFileParser extends depends.extractor.FileParser {
                 false, false, false, true, false, false);
         expression.setRawType(typeName);
         expression.disableDriveTypeFromChild();
-        addExpression(context, typeNode, null, typeName,
-                false, false, false, false, false, false);
+        addTypeUseExpression(context, typeNode, typeName);
         TSNode valueNode = node.getChildByFieldName("value");
         if (valueNode != null && !valueNode.isNull()) {
             walk(valueNode, source, context);
@@ -521,7 +520,7 @@ public class JavaTreeSitterFileParser extends depends.extractor.FileParser {
     }
 
     private void processIdentifier(TSNode node, String source, JavaHandlerContext context) {
-        if (isDeclarationIdentifier(node)) {
+        if (isDeclarationIdentifier(node) || isTypeSyntaxIdentifier(node)) {
             return;
         }
         String identifier = sourceSlice(node, source).trim();
@@ -548,6 +547,40 @@ public class JavaTreeSitterFileParser extends depends.extractor.FileParser {
                 || "method_invocation".equals(parentType)
                 || "field_access".equals(parentType)
                 || "method_reference".equals(parentType);
+    }
+
+    private boolean isTypeSyntaxIdentifier(TSNode node) {
+        TSNode parent = node.getParent();
+        while (parent != null && !parent.isNull()) {
+            String parentType = parent.getType();
+            if ("type_identifier".equals(parentType)
+                    || "scoped_type_identifier".equals(parentType)
+                    || "generic_type".equals(parentType)
+                    || "array_type".equals(parentType)
+                    || "type_arguments".equals(parentType)
+                    || "integral_type".equals(parentType)
+                    || "floating_point_type".equals(parentType)
+                    || "void_type".equals(parentType)) {
+                return true;
+            }
+            if (!isTransparentTypeSyntaxParent(parentType)) {
+                return false;
+            }
+            parent = parent.getParent();
+        }
+        return false;
+    }
+
+    private boolean isTransparentTypeSyntaxParent(String nodeType) {
+        return "identifier".equals(nodeType)
+                || "type_identifier".equals(nodeType)
+                || "scoped_type_identifier".equals(nodeType)
+                || "generic_type".equals(nodeType)
+                || "array_type".equals(nodeType)
+                || "type_arguments".equals(nodeType)
+                || "wildcard".equals(nodeType)
+                || "annotated_type".equals(nodeType)
+                || "dimensions".equals(nodeType);
     }
 
     private String fieldNameForChild(TSNode parent, TSNode child) {
@@ -806,8 +839,6 @@ public class JavaTreeSitterFileParser extends depends.extractor.FileParser {
                 JavaTypeName paramType = parseJavaTypeName(sourceSlice(typeNode, source).trim());
                 param.setRawType(GenericName.build(paramType.baseName, paramType.typeArguments));
                 param.addTypeParameter(paramType.typeArguments);
-                addExpression(context, typeNode, null, paramType.baseName,
-                        false, false, false, false, false, false);
             }
         }
     }
@@ -890,6 +921,16 @@ public class JavaTreeSitterFileParser extends depends.extractor.FileParser {
         return expression;
     }
 
+    private void addTypeUseExpression(JavaHandlerContext context, TSNode keyNode, String typeName) {
+        if (keyNode == null || keyNode.isNull() || typeName == null || typeName.isEmpty()) {
+            return;
+        }
+        Expression expression = addExpression(context, keyNode, null, null,
+                false, false, false, false, false, false);
+        expression.setRawType(typeName);
+        expression.disableDriveTypeFromChild();
+    }
+
     private String extractSimpleIdentifier(TSNode node, String source) {
         if ("identifier".equals(node.getType())) {
             return sourceSlice(node, source).trim();
@@ -931,8 +972,7 @@ public class JavaTreeSitterFileParser extends depends.extractor.FileParser {
                     false, false, false, true, false, false);
             castExpression.setRawType(typeName);
             castExpression.disableDriveTypeFromChild();
-            addExpression(context, typeNode, null, typeName,
-                    false, false, false, false, false, false);
+            addTypeUseExpression(context, typeNode, typeName);
             TSNode valueNode = objectNode.getChildByFieldName("value");
             if (valueNode != null && !valueNode.isNull()) {
                 walk(valueNode, source, context);

@@ -68,6 +68,11 @@ public class SameClassDependencies extends SameClassDependenciesBase {
         return (short) widen(value);
     }
 
+    public boolean sameTypeReferences(SameClassDependencies other, Object value) {
+        SameClassDependencies casted = (SameClassDependencies) value;
+        return other == casted;
+    }
+
     private int widen(int value) {
         return value;
     }

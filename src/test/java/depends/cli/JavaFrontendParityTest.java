@@ -10,6 +10,7 @@ import java.io.File;
 import java.util.Set;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 public class JavaFrontendParityTest {
@@ -93,6 +94,11 @@ public class JavaFrontendParityTest {
                 treeSitterStructure.containsEdgeEndingWith(
                         "parity.SameClassDependencies.helper|Function",
                         "parity.SameClassDependencies.count|Var",
+                        "Use"));
+        assertFalse("type-only syntax should not create constructor use edges",
+                treeSitterMethod.containsEdgeContaining(
+                        "parity.SameClassDependencies.sameTypeReferences)",
+                        "parity.SameClassDependencies.SameClassDependencies)",
                         "Use"));
 
         Set<DependencyGraphSnapshot.TypedEdge> missingMethodEdges = treeSitterMethod.missingFrom(antlrMethod);
