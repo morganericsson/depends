@@ -27,4 +27,16 @@ public class JavaTreeSitterLambdaTest extends JavaTreeSitterParserTest {
         assertContainsRelation(method, DependencyType.CALL, "ts.TSLambdaConsumer.apply");
         assertContainsRelation(method, DependencyType.CREATE, "ts.TSLambdaTarget");
     }
+
+    @Test
+    public void test_should_scope_single_inferred_lambda_parameter() throws IOException {
+        String src = "./src/test/resources/java-code-examples/TreeSitterLambdaSample.java";
+        createParser().parse(src);
+        resolveAllBindings();
+
+        Entity method = entityRepo.getEntity("ts.TreeSitterLambdaSample.inferredParameterShadowsField");
+        assertNotNull(method);
+        assertContainsRelation(method, DependencyType.CALL, "ts.TSLambdaBase.accepts");
+        assertNotContainsRelation(method, DependencyType.USE, "ts.TSLambdaBase.file");
+    }
 }

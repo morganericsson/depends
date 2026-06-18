@@ -25,6 +25,7 @@ public class JavaTreeSitterEnhancedForAndPatternTest extends JavaTreeSitterParse
         Entity method = entityRepo.getEntity("ts.TreeSitterEnhancedForAndPatternSample.run");
         assertNotNull(method);
         assertContainsRelation(method, DependencyType.CALL, "ts.TSLoopItem.ping");
+        assertContainsRelation(method, DependencyType.CAST, "ts.TSLoopItem");
         assertHasCallRelation(method);
     }
 

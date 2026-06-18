@@ -184,6 +184,32 @@ public class RelationCounter {
 				entity.addRelation(expression,buildRelation(entity,DependencyType.USE,referredEntity,expression.getLocation(), possibleDependency));
 			}
 		}
+		addUseRelationFromExpressionType(entity, expression, possibleDependency);
+		addCallRelationFromExpressionType(entity, expression, possibleDependency);
+	}
+
+	private void addUseRelationFromExpressionType(ContainerEntity entity, Expression expression, boolean possibleDependency) {
+		if (!expression.shouldUseTypeAsDependency()) {
+			return;
+		}
+		TypeEntity expressionType = expression.getType();
+		if (expressionType == null || expressionType.getId() < 0) {
+			return;
+		}
+		entity.addRelation(expression, buildRelation(entity, DependencyType.USE, expressionType,
+				expression.getLocation(), possibleDependency));
+	}
+
+	private void addCallRelationFromExpressionType(ContainerEntity entity, Expression expression, boolean possibleDependency) {
+		if (!expression.shouldCallTypeAsDependency()) {
+			return;
+		}
+		TypeEntity expressionType = expression.getType();
+		if (expressionType == null || expressionType.getId() < 0) {
+			return;
+		}
+		entity.addRelation(expression, buildRelation(entity, DependencyType.CALL, expressionType,
+				expression.getLocation(), possibleDependency));
 	}
 
 	private Relation buildRelation(Entity from, String type, Entity referredEntity, boolean possibleDependency) {

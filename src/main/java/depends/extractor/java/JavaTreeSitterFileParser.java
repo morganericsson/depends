@@ -22,6 +22,7 @@ import java.nio.file.Paths;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
+import java.util.Iterator;
 import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -153,6 +154,10 @@ public class JavaTreeSitterFileParser extends depends.extractor.FileParser {
             processMethodReference(node, source, context);
             return;
         }
+        if ("this".equals(nodeType)) {
+            processThisExpression(node, context);
+            return;
+        }
         if ("identifier".equals(nodeType)) {
             processIdentifier(node, source, context);
             return;
@@ -207,7 +212,7 @@ public class JavaTreeSitterFileParser extends depends.extractor.FileParser {
         TSNode superClassNode = node.getChildByFieldName("superclass");
         String superTypeName = "";
         if (superClassNode != null && !superClassNode.isNull()) {
-            List<String> superTypes = extractTypeNames(sourceSlice(superClassNode, source));
+            List<String> superTypes = extractDeclaredTypeNames(superClassNode, source);
             if (!superTypes.isEmpty()) {
                 superTypeName = superTypes.get(0);
                 context.foundExtends(GenericName.build(superTypeName));
@@ -216,7 +221,7 @@ public class JavaTreeSitterFileParser extends depends.extractor.FileParser {
 
         TSNode interfacesNode = node.getChildByFieldName("interfaces");
         if (interfacesNode != null && !interfacesNode.isNull()) {
-            List<String> interfaceTypes = extractTypeNames(sourceSlice(interfacesNode, source));
+            List<String> interfaceTypes = extractDeclaredTypeNames(interfacesNode, source);
             if ("interface_declaration".equals(node.getType())) {
                 for (String intf : interfaceTypes) {
                     context.foundExtends(GenericName.build(intf));
@@ -230,7 +235,7 @@ public class JavaTreeSitterFileParser extends depends.extractor.FileParser {
 
         TSNode superInterfacesNode = node.getChildByFieldName("super_interfaces");
         if (superInterfacesNode != null && !superInterfacesNode.isNull()) {
-            List<String> interfaceTypes = extractTypeNames(sourceSlice(superInterfacesNode, source));
+            List<String> interfaceTypes = extractDeclaredTypeNames(superInterfacesNode, source);
             for (String intf : interfaceTypes) {
                 context.foundExtends(GenericName.build(intf));
             }
@@ -258,13 +263,15 @@ public class JavaTreeSitterFileParser extends depends.extractor.FileParser {
             return;
         }
         String methodName = sourceSlice(nameNode, source).trim();
-        String returnType = parseJavaTypeName(extractMethodReturnType(node, source)).baseName;
+        String rawReturnType = extractMethodReturnType(node, source);
+        String returnType = parseJavaTypeName(rawReturnType).baseName;
         List<String> throwedTypes = extractThrows(node, source);
         int line = node.getStartPoint().getRow() + 1;
         FunctionEntity method = context.foundMethodDeclarator(methodName, returnType, throwedTypes, line);
         applyAnnotations(node, source, method);
         processTypeParameters(findChildByType(node, "type_parameters"), source, context, false);
-        addFormalParameters(declarator, source, context);
+        addArrayReturnTypeUseExpression(context, node, rawReturnType);
+        addFormalParameters(declarator, source, context, false);
         walkChildren(node, source, context);
         context.exitLastedEntity();
     }
@@ -289,14 +296,50 @@ public class JavaTreeSitterFileParser extends depends.extractor.FileParser {
         int line = node.getStartPoint().getRow() + 1;
         FunctionEntity method = context.foundMethodDeclarator(constructorName, constructorName, throwedTypes, line);
         applyAnnotations(node, source, method);
-        addFormalParameters(declarator, source, context);
+        addFormalParameters(declarator, source, context, false);
         if (context.currentType() != null) {
             method.addReturnType(context.currentType());
         }
         addExpression(context, nameNode, null, constructorName,
                 false, false, false, false, false, false);
+        addExplicitSuperConstructorCallExpression(node, source, context);
         walkChildren(node, source, context);
         context.exitLastedEntity();
+    }
+
+    private void addExplicitSuperConstructorCallExpression(TSNode node, String source, JavaHandlerContext context) {
+        if (superTypeStack.isEmpty() || superTypeStack.peek().isEmpty()) {
+            return;
+        }
+        if (!Pattern.compile("(?m)^\\s*super\\s*\\(").matcher(sourceSlice(node, source)).find()) {
+            return;
+        }
+        String typeName = explicitSuperConstructorTypeName();
+        if (typeName.equals(superTypeStack.peek())) {
+            return;
+        }
+        Expression expression = addExpression(context, node, null, null,
+                true, false, false, false, false, false);
+        expression.setRawType(typeName);
+        expression.disableDriveTypeFromChild();
+    }
+
+    private String explicitSuperConstructorTypeName() {
+        String typeName = superTypeStack.peek();
+        if (typeName == null || typeName.contains(".")) {
+            return typeName == null ? "" : typeName;
+        }
+        Iterator<String> iterator = superTypeStack.iterator();
+        if (iterator.hasNext()) {
+            iterator.next();
+        }
+        while (iterator.hasNext()) {
+            String enclosingSuperType = iterator.next();
+            if (enclosingSuperType != null && !enclosingSuperType.isEmpty()) {
+                return enclosingSuperType + "." + typeName;
+            }
+        }
+        return typeName;
     }
 
     private void processField(TSNode node, String source, JavaHandlerContext context) {
@@ -322,7 +365,37 @@ public class JavaTreeSitterFileParser extends depends.extractor.FileParser {
         List<VarEntity> vars = context.foundVarDefinitions(varNames, varType.baseName, varType.typeArguments,
                 node.getStartPoint().getRow() + 1);
         applyAnnotations(node, source, vars);
+        if (!hasOnlySameTypeObjectCreationInitializers(node, varType.baseName, source)) {
+            addDeclaredTypeUseExpressions(context, extractFieldTypeNode(node), source);
+        }
         walkChildren(node, source, context);
+    }
+
+    private boolean hasOnlySameTypeObjectCreationInitializers(TSNode node, String declaredTypeName, String source) {
+        List<TSNode> declarators = findChildrenByType(node, "variable_declarator");
+        if (declarators.isEmpty() || declaredTypeName == null || declaredTypeName.isEmpty()) {
+            return false;
+        }
+        boolean foundInitializer = false;
+        for (TSNode declarator : declarators) {
+            TSNode valueNode = declarator.getChildByFieldName("value");
+            if (valueNode == null || valueNode.isNull()) {
+                return false;
+            }
+            foundInitializer = true;
+            if (!"object_creation_expression".equals(valueNode.getType())) {
+                return false;
+            }
+            TSNode typeNode = valueNode.getChildByFieldName("type");
+            if (typeNode == null || typeNode.isNull()) {
+                typeNode = findFirstDescendantByType(valueNode, "type_identifier");
+            }
+            String createdTypeName = parseJavaTypeName(typeNode == null ? "" : sourceSlice(typeNode, source).trim()).baseName;
+            if (!declaredTypeName.equals(createdTypeName)) {
+                return false;
+            }
+        }
+        return foundInitializer;
     }
 
     private void processEnumConstant(TSNode node, String source, JavaHandlerContext context) {
@@ -355,6 +428,7 @@ public class JavaTreeSitterFileParser extends depends.extractor.FileParser {
             context.foundVarDefinitions(resourceNames, resourceType.baseName, resourceType.typeArguments,
                     node.getStartPoint().getRow() + 1);
         }
+        addDeclaredTypeUseExpressions(context, extractFieldTypeNode(node), source);
         walkChildren(node, source, context);
     }
 
@@ -375,14 +449,24 @@ public class JavaTreeSitterFileParser extends depends.extractor.FileParser {
             context.foundVarDefinition(varName, GenericName.build(varType.baseName), varType.typeArguments,
                     node.getStartPoint().getRow() + 1);
         }
+        addDeclaredTypeUseExpressions(context, typeNode, source);
         walkChildren(node, source, context);
     }
 
     private void processInstanceofExpression(TSNode node, String source, JavaHandlerContext context) {
         TSNode rightNode = node.getChildByFieldName("right");
         if (rightNode != null && !rightNode.isNull()) {
+            String rawRight = sourceSlice(rightNode, source).trim();
+            JavaTypeName instanceofType = parseJavaTypeName(extractInstanceofTypeName(rawRight));
+            if (!instanceofType.baseName.isEmpty()) {
+                Expression expression = addExpression(context, rightNode, null, null,
+                        false, false, false, true, false, false);
+                expression.setRawType(instanceofType.baseName);
+                expression.disableDriveTypeFromChild();
+                addTypeUseExpression(context, rightNode, instanceofType.baseName);
+            }
             Matcher matcher = Pattern.compile("([A-Za-z_][A-Za-z0-9_$.]*)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*$")
-                    .matcher(sourceSlice(rightNode, source).trim());
+                    .matcher(rawRight);
             if (matcher.find()) {
                 JavaTypeName typeName = parseJavaTypeName(matcher.group(1));
                 String varName = matcher.group(2);
@@ -391,6 +475,15 @@ public class JavaTreeSitterFileParser extends depends.extractor.FileParser {
             }
         }
         walkChildren(node, source, context);
+    }
+
+    private String extractInstanceofTypeName(String rawRight) {
+        Matcher patternMatcher = Pattern.compile("([A-Za-z_][A-Za-z0-9_$.]*(?:\\s*<[^>]+>)?(?:\\s*\\[\\])*)\\s+[A-Za-z_][A-Za-z0-9_]*\\s*$")
+                .matcher(rawRight);
+        if (patternMatcher.find()) {
+            return patternMatcher.group(1).trim();
+        }
+        return rawRight;
     }
 
     private void processMethodInvocation(TSNode node, String source, JavaHandlerContext context) {
@@ -406,6 +499,12 @@ public class JavaTreeSitterFileParser extends depends.extractor.FileParser {
         boolean isDotCall = objectNode != null && !objectNode.isNull();
         Expression callExpression = addExpression(context, node, null, callName,
                 true, isDotCall, false, false, false, false);
+        if (shouldUseResolvedExpressionType(node, source)) {
+            callExpression.enableTypeDependencyUse();
+        }
+        if (shouldEmitAssertionArgumentTypeCallForArgument(node, source)) {
+            callExpression.enableTypeDependencyCall();
+        }
         if (isDotCall) {
             addObjectExpression(objectNode, source, context, callExpression);
         }
@@ -425,6 +524,12 @@ public class JavaTreeSitterFileParser extends depends.extractor.FileParser {
                 true, false, true, false, false, false);
         expression.setRawType(typeName);
         expression.disableDriveTypeFromChild();
+        if (isInsideAssertThrowsLambda(node, source)) {
+            expression.enableTypeDependencyUse();
+        }
+        if (shouldEmitCreateTypeUse(node)) {
+            addTypeUseExpression(context, typeNode, typeName);
+        }
         walkChildren(node, source, context);
     }
 
@@ -485,23 +590,34 @@ public class JavaTreeSitterFileParser extends depends.extractor.FileParser {
     private void processSetLikeExpression(TSNode node, String source, JavaHandlerContext context) {
         TSNode leftNode = node.getChildByFieldName("left");
         if (leftNode == null || leftNode.isNull()) {
-            leftNode = findFirstDescendantByType(node, "identifier");
+            leftNode = firstNamedChild(node);
         }
         if (leftNode == null || leftNode.isNull()) {
             return;
         }
+        processFieldAccessTargets(leftNode, source, context);
         String leftIdentifier = extractSimpleIdentifier(leftNode, source);
         if (leftIdentifier.isEmpty()) {
             return;
-        }
-        if ("field_access".equals(leftNode.getType())) {
-            processFieldAccess(leftNode, source, context);
         }
         addExpression(context, node, null, leftIdentifier,
                 false, false, false, false, true, false);
         TSNode rightNode = node.getChildByFieldName("right");
         if (rightNode != null && !rightNode.isNull()) {
             walk(rightNode, source, context);
+        }
+    }
+
+    private void processFieldAccessTargets(TSNode node, String source, JavaHandlerContext context) {
+        if (node == null || node.isNull()) {
+            return;
+        }
+        if ("field_access".equals(node.getType())) {
+            addFieldAccessExpression(node, source, context, null);
+        }
+        int childCount = node.getNamedChildCount();
+        for (int i = 0; i < childCount; i++) {
+            processFieldAccessTargets(node.getNamedChild(i), source, context);
         }
     }
 
@@ -530,11 +646,35 @@ public class JavaTreeSitterFileParser extends depends.extractor.FileParser {
         }
         Expression fieldExpression = addExpression(context, node, parent, fieldName,
                 false, true, false, false, false, false);
+        if (shouldUseResolvedExpressionType(node, source)) {
+            fieldExpression.enableTypeDependencyUse();
+        }
         TSNode objectNode = node.getChildByFieldName("object");
         if (objectNode != null && !objectNode.isNull()) {
             addObjectExpression(objectNode, source, context, fieldExpression);
+            JavaTypeName objectTypeName = declaredTypeForObjectExpression(objectNode, source, context);
+            if (!objectTypeName.baseName.isEmpty()) {
+                Expression typedFieldExpression = addExpression(context, node, null, fieldName,
+                        false, true, false, false, false, false);
+                Expression typedOwnerExpression = addExpression(context, objectNode, typedFieldExpression, null,
+                        false, false, false, false, false, false);
+                typedOwnerExpression.setRawType(GenericName.build(objectTypeName.baseName, objectTypeName.typeArguments));
+                typedOwnerExpression.disableDriveTypeFromChild();
+                typedOwnerExpression.setStatement(true);
+            }
         }
         return fieldExpression;
+    }
+
+    private void processThisExpression(TSNode node, JavaHandlerContext context) {
+        if (context.currentType() == null) {
+            return;
+        }
+        Expression expression = addExpression(context, node, null, null,
+                false, false, false, false, false, false);
+        expression.setRawType(context.currentType().getRawName());
+        expression.disableDriveTypeFromChild();
+        expression.enableTypeDependencyUse();
     }
 
     private void processLambdaExpression(TSNode node, String source, JavaHandlerContext context) {
@@ -578,8 +718,14 @@ public class JavaTreeSitterFileParser extends depends.extractor.FileParser {
         if (identifier.isEmpty()) {
             return;
         }
-        addExpression(context, node, null, identifier,
+        Expression expression = addExpression(context, node, null, identifier,
                 false, false, false, false, false, false);
+        if (shouldUseResolvedExpressionType(node, source)) {
+            expression.enableTypeDependencyUse();
+        }
+        if (shouldEmitAssertionArgumentTypeCallForArgument(node, source)) {
+            expression.enableTypeDependencyCall();
+        }
     }
 
     private boolean isDeclarationIdentifier(TSNode node) {
@@ -700,6 +846,30 @@ public class JavaTreeSitterFileParser extends depends.extractor.FileParser {
             names.add(candidate);
         }
         return names;
+    }
+
+    private List<String> extractDeclaredTypeNames(TSNode node, String source) {
+        List<String> names = new ArrayList<>();
+        collectDeclaredTypeNames(node, source, names);
+        return names;
+    }
+
+    private void collectDeclaredTypeNames(TSNode node, String source, List<String> names) {
+        if (node == null || node.isNull()) {
+            return;
+        }
+        String nodeType = node.getType();
+        if (isTypeNameNode(nodeType)) {
+            String typeName = parseJavaTypeName(sourceSlice(node, source).trim()).baseName;
+            if (!typeName.isEmpty()) {
+                names.add(typeName);
+            }
+            return;
+        }
+        int childCount = node.getNamedChildCount();
+        for (int i = 0; i < childCount; i++) {
+            collectDeclaredTypeNames(node.getNamedChild(i), source, names);
+        }
     }
 
     private JavaTypeName parseJavaTypeName(String rawType) {
@@ -860,7 +1030,7 @@ public class JavaTreeSitterFileParser extends depends.extractor.FileParser {
         return extractTypeNames(sourceSlice(throwsNode, source));
     }
 
-    private void addFormalParameters(TSNode declarator, String source, JavaHandlerContext context) {
+    private void addFormalParameters(TSNode declarator, String source, JavaHandlerContext context, boolean emitTypeUse) {
         TSNode parametersNode = declarator.getChildByFieldName("parameters");
         if (parametersNode == null || parametersNode.isNull()) {
             parametersNode = findChildByType(declarator, "formal_parameters");
@@ -876,8 +1046,8 @@ public class JavaTreeSitterFileParser extends depends.extractor.FileParser {
         parameterNodes.addAll(findChildrenByType(parametersNode, "formal_parameter"));
         parameterNodes.addAll(findChildrenByType(parametersNode, "spread_parameter"));
         for (TSNode paramNode : parameterNodes) {
-            TSNode nameNode = paramNode.getChildByFieldName("name");
-            TSNode typeNode = paramNode.getChildByFieldName("type");
+            TSNode nameNode = extractParameterNameNode(paramNode);
+            TSNode typeNode = extractParameterTypeNode(paramNode);
             if (nameNode == null || nameNode.isNull()) {
                 continue;
             }
@@ -886,18 +1056,72 @@ public class JavaTreeSitterFileParser extends depends.extractor.FileParser {
             if (param == null) {
                 continue;
             }
+            param.setLine(paramNode.getStartPoint().getRow() + 1);
             if (typeNode != null && !typeNode.isNull()) {
                 JavaTypeName paramType = parseJavaTypeName(sourceSlice(typeNode, source).trim());
                 param.setRawType(GenericName.build(paramType.baseName, paramType.typeArguments));
                 param.addTypeParameter(paramType.typeArguments);
+                if (emitTypeUse) {
+                    addTypeUseExpression(context, typeNode, paramType.baseName);
+                }
             }
         }
     }
 
+    private TSNode extractParameterNameNode(TSNode paramNode) {
+        TSNode nameNode = paramNode.getChildByFieldName("name");
+        if (nameNode != null && !nameNode.isNull()) {
+            return nameNode;
+        }
+        TSNode declarator = findChildByType(paramNode, "variable_declarator");
+        if (declarator == null || declarator.isNull()) {
+            return null;
+        }
+        nameNode = declarator.getChildByFieldName("name");
+        if (nameNode != null && !nameNode.isNull()) {
+            return nameNode;
+        }
+        return null;
+    }
+
+    private TSNode extractParameterTypeNode(TSNode paramNode) {
+        TSNode typeNode = paramNode.getChildByFieldName("type");
+        if (typeNode != null && !typeNode.isNull()) {
+            return widenDeclaredTypeNode(typeNode);
+        }
+        int childCount = paramNode.getNamedChildCount();
+        for (int i = 0; i < childCount; i++) {
+            TSNode child = paramNode.getNamedChild(i);
+            if (child != null && !child.isNull() && isTypeNameNode(child.getType())) {
+                return widenDeclaredTypeNode(child);
+            }
+        }
+        return null;
+    }
+
+    private boolean isTypeNameNode(String nodeType) {
+        return "type_identifier".equals(nodeType)
+                || "scoped_type_identifier".equals(nodeType)
+                || "generic_type".equals(nodeType)
+                || "array_type".equals(nodeType)
+                || "integral_type".equals(nodeType)
+                || "floating_point_type".equals(nodeType)
+                || "boolean_type".equals(nodeType)
+                || "void_type".equals(nodeType);
+    }
+
     private String extractFieldType(TSNode fieldNode, String source) {
-        TSNode typeNode = fieldNode.getChildByFieldName("type");
+        TSNode typeNode = extractFieldTypeNode(fieldNode);
         if (typeNode != null && !typeNode.isNull()) {
             return sourceSlice(typeNode, source).trim();
+        }
+        return "";
+    }
+
+    private TSNode extractFieldTypeNode(TSNode fieldNode) {
+        TSNode typeNode = fieldNode.getChildByFieldName("type");
+        if (typeNode != null && !typeNode.isNull()) {
+            return widenDeclaredTypeNode(typeNode);
         }
         int childCount = fieldNode.getNamedChildCount();
         for (int i = 0; i < childCount; i++) {
@@ -906,10 +1130,20 @@ public class JavaTreeSitterFileParser extends depends.extractor.FileParser {
                 continue;
             }
             if (!"modifiers".equals(child.getType()) && !"variable_declarator".equals(child.getType())) {
-                return sourceSlice(child, source).trim();
+                return widenDeclaredTypeNode(child);
             }
         }
-        return "";
+        return null;
+    }
+
+    private TSNode widenDeclaredTypeNode(TSNode typeNode) {
+        TSNode current = typeNode;
+        TSNode parent = current.getParent();
+        while (parent != null && !parent.isNull() && isTypeNameNode(parent.getType())) {
+            current = parent;
+            parent = current.getParent();
+        }
+        return current;
     }
 
     private List<String> extractVariableNames(TSNode fieldNode, String source) {
@@ -980,6 +1214,108 @@ public class JavaTreeSitterFileParser extends depends.extractor.FileParser {
                 false, false, false, false, false, false);
         expression.setRawType(typeName);
         expression.disableDriveTypeFromChild();
+    }
+
+    private void addDeclaredTypeUseExpressions(JavaHandlerContext context, TSNode typeNode, String source) {
+        if (typeNode == null || typeNode.isNull()) {
+            return;
+        }
+        for (String typeName : extractTypeNames(sourceSlice(typeNode, source))) {
+            addTypeUseExpression(context, typeNode, typeName);
+        }
+    }
+
+    private void addArrayReturnTypeUseExpression(JavaHandlerContext context, TSNode node, String returnType) {
+        if (returnType == null || !returnType.contains("[]")) {
+            return;
+        }
+        JavaTypeName typeName = parseJavaTypeName(returnType);
+        if (typeName.baseName.isEmpty() || isPrimitiveTypeName(typeName.baseName)) {
+            return;
+        }
+        addTypeUseExpression(context, node, typeName.baseName);
+    }
+
+    private JavaTypeName declaredTypeForObjectExpression(TSNode objectNode, String source, JavaHandlerContext context) {
+        String objectIdentifier = extractSimpleIdentifier(objectNode, source);
+        if (objectIdentifier.isEmpty() || context.lastContainer() == null) {
+            return new JavaTypeName("", new ArrayList<>());
+        }
+        Entity objectEntity = context.lastContainer().lookupVarInVisibleScope(GenericName.build(objectIdentifier));
+        if (!(objectEntity instanceof VarEntity)) {
+            return new JavaTypeName("", new ArrayList<>());
+        }
+        GenericName rawType = ((VarEntity) objectEntity).getRawType();
+        if (rawType == null || rawType.getName().isEmpty() || isPrimitiveTypeName(rawType.getName())) {
+            return new JavaTypeName("", new ArrayList<>());
+        }
+        return new JavaTypeName(rawType.getName(), rawType.getArguments());
+    }
+
+    private boolean isPrimitiveTypeName(String typeName) {
+        return "byte".equals(typeName)
+                || "short".equals(typeName)
+                || "int".equals(typeName)
+                || "long".equals(typeName)
+                || "float".equals(typeName)
+                || "double".equals(typeName)
+                || "boolean".equals(typeName)
+                || "char".equals(typeName)
+                || "void".equals(typeName);
+    }
+
+    private boolean shouldEmitCreateTypeUse(TSNode node) {
+        TSNode parent = node.getParent();
+        if (parent == null || parent.isNull()) {
+            return false;
+        }
+        if (!"assignment_expression".equals(parent.getType())) {
+            return false;
+        }
+        String fieldName = fieldNameForChild(parent, node);
+        return fieldName == null || "right".equals(fieldName);
+    }
+
+    private boolean shouldUseResolvedExpressionType(TSNode node, String source) {
+        return isAssignmentRightSide(node) || isInsideAssertThrowsLambda(node, source);
+    }
+
+    private boolean isAssignmentRightSide(TSNode node) {
+        TSNode parent = node.getParent();
+        if (parent == null || parent.isNull() || !"assignment_expression".equals(parent.getType())) {
+            return false;
+        }
+        return "right".equals(fieldNameForChild(parent, node));
+    }
+
+    private boolean isInsideAssertThrowsLambda(TSNode node, String source) {
+        TSNode current = node;
+        while (current != null && !current.isNull()) {
+            if ("lambda_expression".equals(current.getType())) {
+                return isAssertThrowsArgument(current, source);
+            }
+            current = current.getParent();
+        }
+        return false;
+    }
+
+    private boolean isAssertThrowsArgument(TSNode lambdaNode, String source) {
+        TSNode parent = lambdaNode.getParent();
+        while (parent != null && !parent.isNull() && !"argument_list".equals(parent.getType())) {
+            parent = parent.getParent();
+        }
+        if (parent == null || parent.isNull()) {
+            return false;
+        }
+        TSNode invocationNode = parent.getParent();
+        if (invocationNode == null || invocationNode.isNull() || !"method_invocation".equals(invocationNode.getType())) {
+            return false;
+        }
+        TSNode nameNode = invocationNode.getChildByFieldName("name");
+        if (nameNode == null || nameNode.isNull()) {
+            return false;
+        }
+        return "assertThrows".equals(sourceSlice(nameNode, source).trim());
     }
 
     private String extractSimpleIdentifier(TSNode node, String source) {
@@ -1060,6 +1396,12 @@ public class JavaTreeSitterFileParser extends depends.extractor.FileParser {
                     true, false, true, false, false, false);
             createExpression.setRawType(typeName);
             createExpression.disableDriveTypeFromChild();
+            if (isInsideAssertThrowsLambda(objectNode, source)) {
+                createExpression.enableTypeDependencyUse();
+            }
+            if (shouldEmitCreateTypeUse(objectNode)) {
+                addTypeUseExpression(context, typeNode, typeName);
+            }
             processInvocationArguments(objectNode, source, context);
             return;
         }
@@ -1139,7 +1481,78 @@ public class JavaTreeSitterFileParser extends depends.extractor.FileParser {
                 continue;
             }
             walk(child, source, context);
+            addArrayAccessTypeUseExpression(child, source, context);
         }
+    }
+
+    private void addArrayAccessTypeUseExpression(TSNode node, String source, JavaHandlerContext context) {
+        if (node == null || node.isNull()) {
+            return;
+        }
+        if (!"array_access".equals(node.getType())) {
+            return;
+        }
+        JavaTypeName typeName = declaredTypeForObjectExpression(node, source, context);
+        if (typeName.baseName.isEmpty()) {
+            return;
+        }
+        addTypeUseExpression(context, node, typeName.baseName);
+    }
+
+    private boolean shouldEmitAssertionArgumentTypeCall(TSNode invocationNode, int argumentIndex, String source) {
+        if (!"method_invocation".equals(invocationNode.getType())) {
+            return false;
+        }
+        TSNode objectNode = invocationNode.getChildByFieldName("object");
+        if (objectNode != null && !objectNode.isNull()) {
+            return false;
+        }
+        TSNode nameNode = invocationNode.getChildByFieldName("name");
+        if (nameNode == null || nameNode.isNull()) {
+            return false;
+        }
+        String name = sourceSlice(nameNode, source).trim();
+        return "assertNotNull".equals(name) || ("assertEquals".equals(name) && argumentIndex == 0);
+    }
+
+    private boolean shouldEmitAssertionArgumentTypeCallForArgument(TSNode argumentNode, String source) {
+        TSNode argumentsNode = argumentNode.getParent();
+        while (argumentsNode != null && !argumentsNode.isNull() && !"argument_list".equals(argumentsNode.getType())) {
+            argumentsNode = argumentsNode.getParent();
+        }
+        if (argumentsNode == null || argumentsNode.isNull()) {
+            return false;
+        }
+        TSNode invocationNode = argumentsNode.getParent();
+        if (invocationNode == null || invocationNode.isNull()) {
+            return false;
+        }
+        int argumentIndex = argumentIndex(argumentsNode, argumentNode);
+        if (argumentIndex < 0) {
+            return false;
+        }
+        return shouldEmitAssertionArgumentTypeCall(invocationNode, argumentIndex, source);
+    }
+
+    private int argumentIndex(TSNode argumentsNode, TSNode argumentNode) {
+        int argumentIndex = 0;
+        int childCount = argumentsNode.getNamedChildCount();
+        for (int i = 0; i < childCount; i++) {
+            TSNode child = argumentsNode.getNamedChild(i);
+            if (sameNode(child, argumentNode)) {
+                return argumentIndex;
+            }
+            argumentIndex++;
+        }
+        return -1;
+    }
+
+    private boolean sameNode(TSNode left, TSNode right) {
+        return left != null && right != null
+                && !left.isNull() && !right.isNull()
+                && left.getStartByte() == right.getStartByte()
+                && left.getEndByte() == right.getEndByte()
+                && left.getType().equals(right.getType());
     }
 
     private void addLambdaParameters(TSNode lambdaNode, String source, JavaHandlerContext context) {
@@ -1180,15 +1593,24 @@ public class JavaTreeSitterFileParser extends depends.extractor.FileParser {
             return;
         }
 
+        if ("identifier".equals(parametersNode.getType())) {
+            addInferredLambdaParameter(parametersNode, source, context);
+            return;
+        }
+
         List<TSNode> inferredParameters = findChildrenByType(parametersNode, "identifier");
         for (TSNode inferred : inferredParameters) {
-            String paramName = sourceSlice(inferred, source).trim();
-            if (paramName.isEmpty()) {
-                continue;
-            }
-            context.foundVarDefinition(paramName, GenericName.build("Object"), new ArrayList<>(),
-                    inferred.getStartPoint().getRow() + 1);
+            addInferredLambdaParameter(inferred, source, context);
         }
+    }
+
+    private void addInferredLambdaParameter(TSNode paramNode, String source, JavaHandlerContext context) {
+        String paramName = sourceSlice(paramNode, source).trim();
+        if (paramName.isEmpty()) {
+            return;
+        }
+        context.foundVarDefinition(paramName, GenericName.build("Object"), new ArrayList<>(),
+                paramNode.getStartPoint().getRow() + 1);
     }
 
     private void applyAnnotations(TSNode node, String source, Entity entity) {

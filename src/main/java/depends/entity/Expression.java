@@ -50,6 +50,8 @@ public class Expression implements Serializable{
 	private boolean isThrow = false;
 	private boolean isStatement = false; //statement is only used for return type calcuation in some langs such as ruby
     									//they will not be treat as real expressions in case of relation calculation
+	private boolean useTypeAsDependency = false;
+	private boolean callTypeAsDependency = false;
 	private boolean deriveTypeFromChild = true;
 
 	private Integer deduceTypeBasedId; //by default, parent expression type determined by most left child
@@ -389,6 +391,22 @@ public class Expression implements Serializable{
 
 	public void setCall(boolean isCall) {
 		this.isCall = isCall;
+	}
+
+	public boolean shouldUseTypeAsDependency() {
+		return useTypeAsDependency;
+	}
+
+	public void enableTypeDependencyUse() {
+		this.useTypeAsDependency = true;
+	}
+
+	public boolean shouldCallTypeAsDependency() {
+		return callTypeAsDependency;
+	}
+
+	public void enableTypeDependencyCall() {
+		this.callTypeAsDependency = true;
 	}
 
 	public void disableDriveTypeFromChild() {
